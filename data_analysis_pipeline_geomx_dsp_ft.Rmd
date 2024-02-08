@@ -1,0 +1,1523 @@
+---
+title: "Data Analysis of Anatomical Comparison Dataset"
+_output: html_notebook
+---
+
+```{r setup}
+    knitr::opts_knit$set(root.dir ="C:/Users/j789s948/Documents/R_Studio_files/Anatomical_Comparison_GeoMx") 
+    
+getwd()
+```
+
+# 0. Summary of Notebook
+
+This summary incorporates all plates for the anatomical comparison analysis up to plates 9-10, skipping the plates 7 and 8 which had sequencing issues.
+
+QC is done up to the Normalization and output files are prepared to send to Leonidas and team.
+
+Last updated 10-27-23
+
+# 1. Introduction and Setup
+
+This analysis is based on the following Bioconductor vignette:
+
+[Analyzing GeoMx-NGS RNA Expression Data with GeomxTools (bioconductor.org)](https://www.bioconductor.org/packages/release/workflows/vignettes/GeoMxWorkflows/inst/doc/GeomxTools_RNA-NGS_Analysis.html#5_Normalization)
+
+Eventually, an interactive analysis tool should be developed with R-Shiny to permit the majority of this analysis to be performed by non-R users.
+
+## 1.1 Required Packages
+
+Run the following script to upload packages as needed. If asked to make further installations, type y for "yes" or "a" for all updates, as needed.
+
+```{r}
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+
+# The following initializes most up to date version of Bioc
+# BiocManager::install(version="3.15")
+# 
+# BiocManager::install("NanoStringNCTools")
+# BiocManager::install("GeomxTools")
+# BiocManager::install("GeoMxWorkflows")
+
+# Note:
+# Needed to install package lme4, numderiv
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+
+if(packageVersion("GeomxTools") < "2.1" & 
+   packageVersion("GeoMxWorkflows") >= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. Please use the same version. 
+    This workflow is meant to be used with most current version of packages. 
+    If you are using an older version of Bioconductor please reinstall GeoMxWorkflows and use vignette(GeoMxWorkflows) instead")
+}
+
+if(packageVersion("GeomxTools") > "2.1" & 
+   packageVersion("GeoMxWorkflows") <= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. 
+         Please use the same version, see install instructions above.")
+    
+    # to remove current package version
+        # remove.packages("GeomxTools")
+        # remove.packages("GeoMxWorkflows")
+    # see install instructions above 
+}
+```
+
+Other packages that will be used throughout the work are listed below.
+
+```{r}
+
+library(knitr)
+library(tidyverse)
+library(dplyr)
+library(ggforce)
+library(writexl)
+```
+
+## 1.2 Loading Data
+
+Run to create the necessary folder to place documents inside.
+
+```{r}
+
+# Create main folder ("data_input")
+
+ifelse(!dir.exists("data_input"), dir.create("data_input"), "Folder exists already")
+
+
+# create subfolders: dccs, pks, annotation
+
+ifelse(!dir.exists("data_input/dccs"), dir.create("data_input/dccs"), "Folder exists already")
+
+ifelse(!dir.exists("data_input/pkcs"), dir.create("data_input/pkcs"), "Folder exists already")
+
+ifelse(!dir.exists("data_input/annotation"), dir.create("data_input/annotation"), "Folder exists already")
+
+
+
+```
+
+We need three different types of files to create the initial dataset:
+
+-   DCCs files -- these contain the expression count data and some info about sequencing data from the next gen sequencing platform used.
+
+-   PKCs -- the probe assay metadata, which describes which gene targets are present in the data, find at the following link: [GeoMx DSP Configuration Files \| NanoString⁤](https://nanostring.com/products/geomx-digital-spatial-profiler/geomx-dsp-configuration-files/)
+
+    (Do not bother to unzip, place in the appropriate file as is.)
+
+-   Annotation file - this will contain information about the tissue, segment area and nuclei count, and any other info you choose to provide.
+
+    -   For new datasets, use lab worksheet from the readout package.
+
+We are just going to load all of the dcc files available along with basic annotations for all, then remove unneeded dccs later on.
+
+Now, let's test this to see if we can successfully create the GeoMx dataset object from these files.
+
+```{r}
+
+# blank_annotations <- readxl::read_xlsx("C:/Users/j789s948/Documents/GeoMx Data Analysis/input_files/annotations/Blank_Annotations.xlsx")
+# 
+# main_annotations <- readxl::read_xlsx("C:/Users/j789s948/Documents/GeoMx Data Analysis/input_files/annotations/Main_Annotations_File_10-27-23.xlsx")
+# 
+# cols_to_merge = c("Sample_ID", "Ovulation", "CM_CoCulture_Control", "Tissue", "Region", "Days", "Treatment", "Patient", "Experiment")
+# 
+# merged_doc <- base::merge(blank_annotations, main_annotations[ , cols_to_merge], by = "Sample_ID", all.X = TRUE, all.Y= TRUE, sort = FALSE)
+
+```
+
+```{r}
+
+
+# writexl::write_xlsx(merged_doc, "C:/Users/j789s948/Downloads/Ordered_Annotations_10-27-23.xlsx")
+
+
+```
+
+```{r}
+
+# Reference the main folder 'file.path' containing the sub-folders with each
+# data file type:
+
+datadir <- file.path("~/R_Studio_files/Anatomical_Comparison_GeoMx/data_input")
+
+# automatically list files in each directory for use
+DCCFiles <- dir(file.path(datadir, "dccs"), pattern = "*.dcc",
+                full.names = TRUE, recursive = TRUE)
+
+
+PKCFiles <- dir(file.path(datadir, "pkcs"), pattern = ".pkc$",
+                                full.names = TRUE, recursive = TRUE)
+
+
+#Note that we add "Anatomical to ensure we open the correct annotation file
+#### IMPORTANT #### make sure to change to appropriate file
+SampleAnnotationFile <- dir(file.path(datadir, "annotation"), pattern = "10-27-23.xlsx$",
+      full.names = TRUE, recursive = TRUE)
+
+
+```
+
+Testing creation of `readNanoStringGeoMxSet` object. If you get errors saying files are missing or do not have any count info, check to make sure all .dcc files are in the folder (and that you have copied the correct ones).
+
+```{r}
+
+#load data
+
+
+demoData <-
+    readNanoStringGeoMxSet(dccFiles = DCCFiles,
+                           pkcFiles = PKCFiles,
+                           phenoDataFile = SampleAnnotationFile,
+                           phenoDataSheet = "Sheet1", # make sure this matches doc
+                           phenoDataDccColName = "Sample_ID",
+                           protocolDataColNames = c("aoi", "roi"),
+                           experimentDataColNames = c("panel"))
+
+```
+
+# 2. Study Design
+
+Nanostring recommends checking the PKC files to ensure the expected ones have been loaded.
+
+```{r}
+
+# make sure you loaded knitr using library(knitr)
+
+pkcs <- annotation(demoData)
+modules <- gsub(".pkc", "", pkcs)
+kable(data.frame(PKCs = pkcs, modules = modules))
+
+```
+
+Now we need to make a smaller dataset including only the anatomical comparison experiments and excluding plates 7 and 8 (which had sequencing issues).
+
+```{r}
+
+# select only those where Experiment == "anatomical"
+
+
+
+AnatCompData <- demoData[, pData(demoData)$Experiment %in% c("anatomical", NA)]
+
+# Also would be a good idea to delete unneeded column names in pData
+# Treatment, Days, CM_CoCulture_Control, Ovulation, ShortName
+
+# Access PhenoData
+
+pheno_data <- pData(AnatCompData)
+
+# Remove unwanted columns
+
+pheno_data <- pheno_data[, !colnames(pheno_data) %in% c("Treatment", "Days", "CM_CoCulture_Control", "Ovulation", "ShortName") ]
+
+
+# We should also simplify patient names
+
+pheno_data <- pheno_data |>
+  mutate(
+    Patient = fct_recode(Patient, 
+      "Pt_1" = "Patient_1",
+      "Pt_2" = "Patient_2",
+      "Pt_3" = "Patient_3"),
+    
+    shortRegion = fct_recode(Region, "Amp" = "Ampulla",
+                              "Inf" = "Infundibulum",
+                              "Fimb" = "Fimbria",
+                              "Isth" = "Isthmus"
+                              )
+    )
+
+# update PhenoData in GeoMx object 
+
+pData(AnatCompData) <- pheno_data
+
+
+```
+
+Save the Completed AnatCompData Object;
+
+This is the object for all Anatomical sudies, before QC, probe merging, or filtering!
+
+```{r}
+
+AnatCompData_beforeQC <- AnatCompData
+
+save(AnatCompData_beforeQC, file = "AnatCompData_beforeQC.Rdata")
+
+```
+
+## 2.1 Sample Overview
+
+Now that we have loaded the data, we can visually summarize the experimental design for our dataset to look at the different types of samples and ROI/AOI segments that have been profiled. We present this information in a Sankey diagram.
+
+This appears to be broken in the original and I'm not sure how to fix, so we will skip for now.
+
+Might try:
+
+[Sankey Diagram for energy consumption -- the R Graph Gallery (r-graph-gallery.com)](https://r-graph-gallery.com/323-sankey-diagram-with-the-networkd3-library.html)
+
+to create a better version of this graph
+
+```{r}
+
+
+# select the annotations we want to show, use `` to surround column names with
+# spaces or special symbols
+count_mat <- count(pData(AnatCompData), Patient, Region = shortRegion, segment)
+
+
+# gather the data and plot in order: region, segment
+test_gr <- gather_set_data(count_mat, 1:3)
+# test_gr$x <- factor(test_gr$x,
+#                     levels = c("patient_number", region", "segment"))
+
+```
+
+```{r}
+kable(count_mat)
+
+```
+
+```{r}
+# plot Sankey
+Sankey1 <- ggplot(test_gr, aes(x, id = id, split = y, value = n)) +
+    geom_parallel_sets(aes(fill = Region), alpha = 0.5, axis.width = 0.1) +
+    geom_parallel_sets_axes(axis.width = 0.2) +
+    geom_parallel_sets_labels(color = "white", size = 6) +
+    theme_classic(base_size = 20) +
+    theme(legend.position = "bottom",
+          axis.ticks.y = element_blank(),
+          axis.line = element_blank(),
+          axis.text.y = element_blank()) +
+    scale_y_continuous(expand = expansion(0)) +
+    scale_x_discrete(expand = expansion(0)) +
+    labs(x = "", y = "") +
+    annotate(geom = "segment", x = 3.3, xend = 3.3,
+             y = 0, yend = 100, lwd = 2) +
+    annotate(geom = "text", x = 3.2, y = 50, angle = 90, size = 5,
+             hjust = 0.5, label = "110 segments")
+
+Sankey1
+```
+
+# 4. QC and Pre-Processing
+
+![](images/paste-2538D7AC.png)
+
+There are three sets of pre-process workflow for GeoMx data. In the first part, faulty segments are removed and genes are selected based on Quality Control.
+
+First, however, we must shift all counts of 0 to 1 (this permits downstream transformations.
+
+```{r}
+
+# shift counts to one
+
+AnatCompData <- shiftCountsOne(AnatCompData, useDALogic = TRUE)
+```
+
+## 4.1 Segment QC
+
+Assess sequencing quality and adequate tissue sampling for every ROI/AOI segment.
+
+Every ROI is tested for:
+
+-   Raw sequencing reads: segments with \> 1000 raw reads are removed
+
+-   \% Aligned, % Trimmed, % Stitched Sequencing Reads: Segments below \~ 80% for one or more of these QC parameters are removed.
+
+-   \% Sequencing Saturation ([1-deduplicated reads/aligned reads]%: segments below \~50% require additional sequencing to capture full sample diversity, not typically analyzed util improved.
+
+-   Negative Count: this is the geometric mean of the several unique negative probes in the GeoMx panel that do not target mRNA and establish the background count level per segment; segments with low negative counts (1-10) are not necessarily removed but may be studied closer for low endogenous gene signal and/or insufficient tissue sampling.
+
+-   No Template Control (NTC) count: values \>1,000 could indicate contamination for the segments associated with this NTC; however, in cases where the NTC count is between 1,000- 10,000, the segments may be used if the NTC data is uniformly low (e.g. 0-2 counts for all probes).
+
+-   Nuclei: \>100 nuclei per segment is generally recommended; however, this cutoff is highly study/tissue dependent and may need to be reduced; what is most important is [consistency in the nuclei distribution for segments within the study.]{.underline}
+
+    My note: Do they means consistency in count or consistency in average nuclei per area?
+
+-   Area: generally correlates with nuclei; a strict cutoff is not generally applied based on area.
+
+## 4.1.1 Select Segment QC
+
+First, we select the QC parameter cutoffs, against which our ROI/AOI segments will be tested and flagged appropriately. We have selected the appropriate study-specific parameters for this study. Note: the default QC values recommended above are advised when surveying a new dataset for the first time.
+
+For some reason the QC Summary seems not to be working properly for low area? Possibly the area got dropped from the annotations somehow? But areas seems to be there based on a check?
+
+```{r}
+
+# Default QC cutoffs are commented in () adjacent to the respective parameters
+# study-specific values were selected after visualizing the QC results in more
+# detail below
+
+QC_params <-
+    list(minSegmentReads = 1000, # Minimum number of reads (1000)
+         percentTrimmed = 80,    # Minimum % of reads trimmed (80%)
+         percentStitched = 80,   # Minimum % of reads stitched (80%)
+         percentAligned = 75,    # Minimum % of reads aligned (80%)
+         percentSaturation = 50, # Minimum sequencing saturation (50%)
+         minNegativeCount = 1,   # Minimum negative control counts (10)
+         maxNTCCount = 3000,     # Maximum counts observed in NTC well (1000)
+         minNuclei = 20,         # Minimum # of nuclei estimated (100)
+         minArea = 1000)         # Minimum segment area (5000)
+AnatCompData <-
+    setSegmentQCFlags(AnatCompData, 
+                      qcCutoffs = QC_params)        
+
+# Collate QC Results
+QCResults <- protocolData(AnatCompData)[["QCFlags"]]
+  # this seems to generate some NA values for the NTc controls, which don't have area. 
+  # Tell it to ignore NAs? Or dorp NTC controls?
+
+
+flag_columns <- colnames(QCResults)
+QC_Summary <- data.frame(Pass = colSums(!QCResults[, flag_columns], na.rm = TRUE),
+                         Warning = colSums(QCResults[, flag_columns], na.rm = TRUE))
+QCResults$QCStatus <- apply(QCResults, 1L, function(x) {
+    ifelse(sum(x) == 0L, "PASS", "WARNING")
+})
+QC_Summary["TOTAL FLAGS", ] <-
+    c(sum(QCResults[, "QCStatus"] == "PASS", na.rm = TRUE),
+      sum(QCResults[, "QCStatus"] == "WARNING", na.rm = TRUE))
+
+```
+
+### 4.1.1 Visualize Segment QC
+
+Before excluding any low-performing ROI/AOI segments, we visualize the distributions of the data for the different QC parameters. Note that the "Select Segment QC" and "Visualize Segment QC" sections are performed in parallel to fully understand low-performing segments for a given study. Iteration may follow to select the study-specific QC cutoffs.
+
+For QC visualization, we write a quick function to draw histograms of our data.
+
+```{r}
+
+col_by <- "segment"
+
+# Graphical summaries of QC statistics plot function
+QC_histogram <- function(assay_data = NULL,
+                         annotation = NULL,
+                         fill_by = NULL,
+                         thr = NULL,
+                         scale_trans = NULL) {
+    plt <- ggplot(assay_data,
+                  aes_string(x = paste0("unlist(`", annotation, "`)"),
+                             fill = fill_by)) +
+        geom_histogram(bins = 50) +
+        geom_vline(xintercept = thr, lty = "dashed", color = "black") +
+        theme_bw() + guides(fill = "none") +
+        facet_wrap(as.formula(paste("~", fill_by)), nrow = 4) +
+        labs(x = annotation, y = "Segments, #", title = annotation)
+    if(!is.null(scale_trans)) {
+        plt <- plt +
+            scale_x_continuous(trans = scale_trans)
+    }
+    plt
+}
+
+```
+
+Now we explore each of the QC metrics for the segments.
+
+```{r}
+QC_histogram(sData(AnatCompData), "Trimmed (%)", col_by, 80)
+
+```
+
+```{r}
+QC_histogram(sData(AnatCompData), "Stitched (%)", col_by, 80)
+
+
+```
+
+```{r}
+QC_histogram(sData(AnatCompData), "Aligned (%)", col_by, 75)
+
+```
+
+```{r}
+QC_histogram(sData(AnatCompData), "Saturated (%)", col_by, 50) +
+    labs(title = "Sequencing Saturation (%)",
+         x = "Sequencing Saturation (%)")
+
+```
+
+```{r}
+
+QC_histogram(sData(AnatCompData), "Area", col_by, 1000, scale_trans = "log10")
+
+
+```
+
+```{r}
+
+
+QC_histogram(sData(AnatCompData), "Nuclei", col_by, 20)
+
+```
+
+```{r}
+# calculate the negative geometric means for each module
+negativeGeoMeans <- 
+    esBy(negativeControlSubset(AnatCompData), 
+         GROUP = "Module", 
+         FUN = function(x) { 
+             assayDataApply(x, MARGIN = 2, FUN = ngeoMean, elt = "exprs") 
+         }) 
+protocolData(AnatCompData)[["NegGeoMean"]] <- negativeGeoMeans
+
+# explicitly copy the Negative geoMeans from sData to pData
+negCols <- paste0("NegGeoMean_", modules)
+pData(AnatCompData)[, negCols] <- sData(AnatCompData)[["NegGeoMean"]]
+for(ann in negCols) {
+    plt <- QC_histogram(pData(AnatCompData), ann, col_by, 2, scale_trans = "log10")
+    print(plt)
+}
+
+```
+
+```{r}
+# detach neg_geomean columns ahead of aggregateCounts call
+pData(AnatCompData) <- pData(AnatCompData)[, !colnames(pData(AnatCompData)) %in% negCols]
+
+# show all NTC values, Freq = # of Segments with a given NTC count:
+
+# we seem to be missing a column called NTC that is required for this to work 
+# kable(table(NTC_Count = sData(demoData)$NTC),
+#       col.names = c("NTC Count", "# of Segments"))
+
+
+
+```
+
+Finally, plot all of the QC Summary Information in a table.
+
+```{r}
+kable(QC_Summary, caption = "QC Summary Table for each Segment")
+```
+
+### 4.1.3 Remove Flagged Segments
+
+As the final step in the QC, we remove all flagged segments that do not meet the QC cutoff.
+
+```{r}
+AnatCompData_afterQC <- AnatCompData[, QCResults$QCStatus == "PASS"]
+
+# Subsetting our dataset has removed samples which did not pass QC
+
+dim(AnatCompData)
+dim(AnatCompData_afterQC)
+
+
+```
+
+Save the object after QC
+
+```{r}
+save(AnatCompData_afterQC, file = "AnatCompData_afterQC.Robject")
+
+
+```
+
+```{r}
+count_mat_QC1 <- count(pData(AnatCompData_afterQC), Patient, Region, segment)
+
+kable(count_mat_QC1)
+
+
+```
+
+## 4.2 Probe QC
+
+Before we summarize our data into gene-level count data, we will remove low-performing probes. In short, this QC is an outlier removal process, whereby probes are either removed entirely from the study (global) or from specific segments (local). The QC applies to gene targets for which there are multiple distinct probes representing the count for a gene per segment. In WTA data, one specific probe exists per target gene; thus, Probe QC does not apply to the endogenous genes in the panel. Rather, it is performed on the negative control probes; there are multiple probes representing our negative controls, which do not target any sequence in the genome. These probes enable calculation of the background per segment and will be important for determining gene detection downstream.
+
+After Probe QC, there will always remain at least one probe representing every gene target. In other words, Probe QC never removes genes from your data.
+
+### 4.2.1 Set Probe QC Flags
+
+A probe is removed globally from the dataset if either of the following is true:
+
+-   the geometric mean of that probe's counts from all segments divided by the geometric mean of all probe counts representing the target from all segments is less than 0.1
+-   the probe is an outlier according to the Grubb's test in at least 20% of the segments A probe is removed locally (from a given segment) if the probe is an outlier according to the Grubb's test in that segment.
+
+We do not typically adjust these QC parameters.
+
+```{r}
+
+
+# Generally keep the qcCutoffs parameters unchanged. Set removeLocalOutliers to 
+# FALSE if you do not want to remove local outliers
+AnatCompData_afterQC <- setBioProbeQCFlags(AnatCompData_afterQC, 
+                               qcCutoffs = list(minProbeRatio = 0.1,
+                                                percentFailGrubbs = 20), 
+                               removeLocalOutliers = TRUE)
+
+ProbeQCResults <- fData(AnatCompData_afterQC)[["QCFlags"]]
+
+# Define QC table for Probe QC
+qc_df <- data.frame(Passed = sum(rowSums(ProbeQCResults[, -1]) == 0),
+                    Global = sum(ProbeQCResults$GlobalGrubbsOutlier),
+                    Local = sum(rowSums(ProbeQCResults[, -2:-1]) > 0
+                                & !ProbeQCResults$GlobalGrubbsOutlier))
+
+```
+
+We report the number of global and local outlier probes.
+
+```{r}
+
+qc_df
+
+
+```
+
+### 4.2.1 Exclude Outlier Probes
+
+```{r}
+#Subset object to exclude all that did not pass Ratio & Global testing
+ProbeQCPassed <- 
+    subset(AnatCompData_afterQC, 
+           fData(AnatCompData_afterQC)[["QCFlags"]][,c("LowProbeRatio")] == FALSE &
+               fData(AnatCompData_afterQC)[["QCFlags"]][,c("GlobalGrubbsOutlier")] == FALSE)
+
+dim(AnatCompData_afterQC)
+dim(ProbeQCPassed)
+#> Features  Samples 
+#>    18641      229
+AnatCompData_AfterProbeQC <- ProbeQCPassed 
+
+
+```
+
+```{r}
+
+save(AnatCompData_AfterProbeQC, file = "AnatCompData_AfterProbeQC.Robj")
+
+```
+
+## 4.3 Create Gene Level Count Data
+
+With our Probe QC steps complete, we will generate a gene-level count matrix. The count for any gene with multiple probes per segment is calculated as the geometric mean of those probes.
+
+```{r}
+
+# Check how many unique targets the object has
+length(unique(featureData(AnatCompData_AfterProbeQC)[["TargetName"]]))
+#> [1] 18504
+
+# collapse to targets
+target_AnatCompData <- aggregateCounts(AnatCompData_AfterProbeQC)
+dim(AnatCompData_AfterProbeQC)
+dim(target_AnatCompData)
+#> Features  Samples 
+#>    18504      229
+exprs(target_AnatCompData)[1:5, 1:2]
+#>       DSP-1001250007851-H-A02.dcc DSP-1001250007851-H-A03.dcc
+#> A2M                           485                         262
+#> NAT2                           15                          18
+#> ACADM                          31                          15
+#> ACADS                          27                          17
+#> ACAT1                          29                          24
+
+
+```
+
+```{r}
+
+AnatCompData_collapsedtoTarg <- target_AnatCompData
+
+save(AnatCompData_collapsedtoTarg, file = "AnatCompData_collapsedtoTarg.Robj")
+
+```
+
+## 4.4 Limit of Quantitation
+
+In addition to Segment and Probe QC, we also determine the limit of quantification (LOQ) per segment. The LOQ is calculated based on the distribution of negative control probes and is intended to approximate the quantifiable limit of gene expression per segment. Please note that this process is more stable in larger segments. Likewise, the LOQ may not be as accurately reflective of true signal detection rates in segments with low negative probe counts (ex: \<2). The formula for calculating the LOQ in the ith segment is:
+
+$$LOQ_i=geomean(NegProbe_i)∗geoSD(NegProbe_i)^n$$
+
+We typically use 2 geometric standard deviations (n=2) above the geometric mean as the LOQ, which is reasonable for most studies. We also recommend that a minimum LOQ of 2 be used if the LOQ calculated in a segment is below this threshold.
+
+```{r}
+
+# Define LOQ SD threshold and minimum value
+cutoff <- 2
+minLOQ <- 2
+
+# Calculate LOQ per module tested
+LOQ <- data.frame(row.names = colnames(target_AnatCompData))
+for(module in modules) {
+    vars <- paste0(c("NegGeoMean_", "NegGeoSD_"),
+                   module)
+    if(all(vars[1:2] %in% colnames(pData(target_AnatCompData)))) {
+        LOQ[, module] <-
+            pmax(minLOQ,
+                 pData(target_AnatCompData)[, vars[1]] * 
+                     pData(target_AnatCompData)[, vars[2]] ^ cutoff)
+    }
+}
+pData(target_AnatCompData)$LOQ <- LOQ
+
+
+
+```
+
+## 4.5 Filtering
+
+After determining the limit of quantification (LOQ) per segment, we recommend filtering out either segments and/or genes with abnormally low signal. Filtering is an important step to focus on the true biological data of interest.
+
+We determine the number of genes detected in each segment across the dataset.
+
+```{r}
+
+LOQ_Mat <- c()
+for(module in modules) {
+    ind <- fData(target_AnatCompData)$Module == module
+    Mat_i <- t(esApply(target_AnatCompData[ind, ], MARGIN = 1,
+                       FUN = function(x) {
+                           x > LOQ[, module]
+                       }))
+    LOQ_Mat <- rbind(LOQ_Mat, Mat_i)
+}
+# ensure ordering since this is stored outside of the geomxSet
+LOQ_Mat <- LOQ_Mat[fData(target_AnatCompData)$TargetName, ]
+
+
+```
+
+### 4.5.2 Segment Gene Detection
+
+We first filter out segments with exceptionally low signal. These segments will have a small fraction of panel genes detected above the LOQ relative to the other segments in the study. Let's visualize the distribution of segments with respect to their % genes detected:
+
+```{r}
+# Save detection rate information to pheno data
+pData(target_AnatCompData)$GenesDetected <- 
+    colSums(LOQ_Mat, na.rm = TRUE)
+pData(target_AnatCompData)$GeneDetectionRate <-
+    pData(target_AnatCompData)$GenesDetected / nrow(target_AnatCompData)
+
+# Determine detection thresholds: 1%, 5%, 10%, 15%, >15%
+pData(target_AnatCompData)$DetectionThreshold <- 
+    cut(pData(target_AnatCompData)$GeneDetectionRate,
+        breaks = c(0, 0.01, 0.05, 0.1, 0.15, 0.20, 0.25, 1),
+        labels = c("<1%", "1-5%", "5-10%", "10-15%", "16%-20%", "21%-25%", ">25%"))
+
+# stacked bar plot of different cut points (1%, 5%, 10%, 15%)
+ggplot(pData(target_AnatCompData),
+       aes(x = DetectionThreshold)) +
+    geom_bar(aes(fill = Region)) +
+    geom_text(stat = "count", aes(label = ..count..), vjust = -0.5) +
+    theme_bw() +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+    labs(x = "Gene Detection Rate",
+         y = "Segments, #",
+         fill = "Segment Type")
+#> Warning: The dot-dot notation (`..count..`) was deprecated in ggplot2 3.4.0.
+#> ℹ Please use `after_stat(count)` instead.
+#> This warning is displayed once every 8 hours.
+#> Call `lifecycle::last_lifecycle_warnings()` to see where this warning was
+#> generated.
+
+
+
+```
+
+We can also create a table to review whether ciliated or secretory is most impacted.
+
+```{r}
+
+# cut percent genes detected from above
+kable(table(pData(target_AnatCompData)$DetectionThreshold,
+            pData(target_AnatCompData)$segment))
+
+
+kable(table(pData(target_AnatCompData)$DetectionThreshold,
+            pData(target_AnatCompData)$Region))
+
+```
+
+In this example, we choose to remove segments with less than 10% of the genes detected. Generally, 5-10% detection is a reasonable segment filtering threshold. However, based on the experimental design (e.g. segment types, size, nuclei) and tissue characteristics (e.g. type, age), these guidelines may require adjustment.
+
+```{r}
+
+target_AnatCompData_0.05 <-
+    target_AnatCompData[, pData(target_AnatCompData)$GeneDetectionRate >= .05]
+
+
+target_AnatCompData_0.1 <-
+    target_AnatCompData[, pData(target_AnatCompData)$GeneDetectionRate >= .1]
+
+dim(target_AnatCompData)
+#> Features  Samples 
+#>    18504      221
+
+dim(target_AnatCompData_0.05)
+
+dim(target_AnatCompData_0.1)
+
+```
+
+```{r}
+
+count_mat_filter_0.05 <- count(pData(target_AnatCompData_0.05), Patient, shortRegion, segment)
+
+kable(count_mat_filter_0.05)
+```
+
+```{r}
+
+count_mat_filter_0.1 <- count(pData(target_AnatCompData_0.1), Patient, shortRegion, segment)
+
+kable(count_mat_filter_0.1)
+```
+
+Let's re-plot the Sankey diagram showing our current working dataset. This is now a dataset that no longer contains segments flagged by Segment QC or that have low gene detection rates.
+
+```{r}
+
+
+
+
+# gather the data and plot in order: class, slide name, region, segment
+test_gr_0.1 <- gather_set_data(count_mat_filter_0.1, 1:3)
+
+test_gr_0.05 <- gather_set_data(count_mat_filter_0.05, 1:3)
+
+
+
+ggplot(test_gr_0.1, aes(x, id = id, split = y, value = n)) +
+    geom_parallel_sets(aes(fill = shortRegion), alpha = 0.5, axis.width = 0.1) +
+    geom_parallel_sets_axes(axis.width = 0.2) +
+    geom_parallel_sets_labels(color = "white", size = 6) +
+    theme_classic(base_size = 17) + 
+    theme(legend.position = "bottom",
+          axis.ticks.y = element_blank(),
+          axis.line = element_blank(),
+          axis.text.y = element_blank()) +
+    scale_y_continuous(expand = expansion(0)) + 
+    scale_x_discrete(expand = expansion(0)) +
+    labs(title = "Segment Distribution After QC", x = "", y = "") +
+    annotate(geom = "segment", x = 3.3, xend = 3.3,
+             y = 0, yend = 100, lwd = 2) +
+    annotate(geom = "text", x = 3.2, y = 50, angle = 90, size = 5,
+             hjust = 0.5, label = paste0(sum(count_mat_filter_0.1$n), "segments"))
+
+
+ggplot(test_gr_0.05, aes(x, id = id, split = y, value = n)) +
+    geom_parallel_sets(aes(fill = shortRegion), alpha = 0.5, axis.width = 0.1) +
+    geom_parallel_sets_axes(axis.width = 0.2) +
+    geom_parallel_sets_labels(color = "white", size = 6) +
+    theme_classic(base_size = 17) + 
+    theme(legend.position = "bottom",
+          axis.ticks.y = element_blank(),
+          axis.line = element_blank(),
+          axis.text.y = element_blank()) +
+    scale_y_continuous(expand = expansion(0)) + 
+    scale_x_discrete(expand = expansion(0)) +
+    labs(title = "0.05 segment filtering", x = "", y = "") +
+    annotate(geom = "segment", x = 3.3, xend = 3.3,
+             y = 0, yend = 100, lwd = 2) +
+    annotate(geom = "text", x = 3.2, y = 50, angle = 90, size = 5,
+             hjust = 0.5, label = paste0(sum(count_mat_filter_0.05$n), "segments"))
+
+```
+
+### 4.5.2 Gene Detection Rate.
+
+Next, we determine the detection rate for genes across the study. To illustrate this idea, we create a small gene list (goi) to review.
+
+```{r}
+
+#Detection Rate for O.05 filter
+
+library(scales) # for percent
+
+# Calculate detection rate:
+LOQ_Mat_0.05 <- LOQ_Mat[, colnames(target_AnatCompData_0.05)]
+fData(target_AnatCompData_0.05)$DetectedSegments <- rowSums(LOQ_Mat_0.05, na.rm = TRUE)
+fData(target_AnatCompData_0.05)$DetectionRate <-
+    fData(target_AnatCompData_0.05)$DetectedSegments / nrow(pData(target_AnatCompData_0.05))
+
+# Gene of interest detection table
+goi <- c("PDCD1", "CD274", "IFNG", "CD8A", "CD68", "EPCAM",
+         "KRT18", "CLDN8",
+         "FOXJ1", "PAX8", "LGR5")
+goi_df_0.05 <- data.frame(
+    Gene = goi,
+    Number = fData(target_AnatCompData_0.05)[goi, "DetectedSegments"],
+    DetectionRate = percent(fData(target_AnatCompData_0.05)[goi, "DetectionRate"]))
+
+
+
+```
+
+```{r}
+
+goi_df_0.05
+```
+
+We can see that individual genes are detected to varying degrees in the segments, which leads us to the next QC we will perform across the dataset.
+
+```{r}
+
+
+#Detection Rate for O.05 filter
+
+library(scales) # for percent
+
+# Calculate detection rate:
+LOQ_Mat_0.1 <- LOQ_Mat[, colnames(target_AnatCompData_0.1)]
+fData(target_AnatCompData_0.1)$DetectedSegments <- rowSums(LOQ_Mat_0.1, na.rm = TRUE)
+fData(target_AnatCompData_0.1)$DetectionRate <-
+    fData(target_AnatCompData_0.1)$DetectedSegments / nrow(pData(target_AnatCompData_0.1))
+
+# Gene of interest detection table
+goi <- c("PDCD1", "CD274", "IFNG", "CD8A", "CD68", "EPCAM",
+         "KRT18", "CLDN8",
+         "FOXJ1", "PAX8", "LGR5")
+goi_df_0.1 <- data.frame(
+    Gene = goi,
+    Number = fData(target_AnatCompData_0.1)[goi, "DetectedSegments"],
+    DetectionRate = percent(fData(target_AnatCompData_0.1)[goi, "DetectionRate"]))
+
+```
+
+```{r}
+
+goi_df_0.1
+```
+
+### 4.5.3 Gene Filtering
+
+We will graph the total number of genes detected in different percentages of segments. Based on the visualization below, we can better understand global gene detection in our study and select how many low detected genes to filter out of the dataset. Gene filtering increases performance of downstream statistical tests and improves interpretation of true biological signal.
+
+```{r}
+
+# Plot detection rate:
+plot_detect <- data.frame(Freq = c(1, 5, 10, 20, 30, 50))
+plot_detect$Number <-
+    unlist(lapply(c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+                  function(x) {sum(fData(target_AnatCompData_0.05)$DetectionRate >= x)}))
+plot_detect$Rate <- plot_detect$Number / nrow(fData(target_AnatCompData_0.05))
+rownames(plot_detect) <- plot_detect$Freq
+
+ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = formatC(Number, format = "d", big.mark = ",")),
+              vjust = 1.6, color = "black", size = 4) +
+    scale_fill_gradient2(low = "orange2", mid = "lightblue",
+                         high = "dodgerblue3", midpoint = 0.65,
+                         limits = c(0,1),
+                         labels = scales::percent) +
+    theme_bw() +
+    scale_y_continuous(labels = scales::percent, limits = c(0,1),
+                       expand = expansion(mult = c(0, 0))) +
+    labs(x = "% of Segments",
+         y = "Genes Detected, % of Panel > LOQ")
+
+
+```
+
+```{r}
+
+
+# Plot detection rate:
+plot_detect <- data.frame(Freq = c(1, 5, 10, 20, 30, 50))
+plot_detect$Number <-
+    unlist(lapply(c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+                  function(x) {sum(fData(target_AnatCompData_0.1)$DetectionRate >= x)}))
+plot_detect$Rate <- plot_detect$Number / nrow(fData(target_AnatCompData_0.1))
+rownames(plot_detect) <- plot_detect$Freq
+
+ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = formatC(Number, format = "d", big.mark = ",")),
+              vjust = 1.6, color = "black", size = 4) +
+    scale_fill_gradient2(low = "orange2", mid = "lightblue",
+                         high = "dodgerblue3", midpoint = 0.65,
+                         limits = c(0,1),
+                         labels = scales::percent) +
+    theme_bw() +
+    scale_y_continuous(labels = scales::percent, limits = c(0,1),
+                       expand = expansion(mult = c(0, 0))) +
+    labs(x = "% of Segments",
+         y = "Genes Detected, % of Panel > LOQ")
+
+
+```
+
+We typically set a % Segment cutoff ranging from 5-20% based on the biological diversity of our dataset. For this study, we will select 10% as our cutoff. In other words, we will focus on the genes detected in at least 10% of our segments; we filter out the remainder of the targets.
+
+Note: if we know that a key gene is represented in only a small number of segments (\<10%) due to biological diversity, we may select a different cutoff or keep the target gene by manually selecting it for inclusion in the data object.
+
+```{r}
+
+# Subset to target genes detected in at least 10% of the samples.
+#   Also manually include the negative control probe, for downstream use
+negativeProbefData <- subset(fData(target_AnatCompData_0.05), CodeClass == "Negative")
+neg_probes <- unique(negativeProbefData$TargetName)
+target_AnatCompData_0.05_genefilter <- 
+    target_AnatCompData_0.05[fData(target_AnatCompData_0.05)$DetectionRate >= 0.1 |
+                        fData(target_AnatCompData_0.05)$TargetName %in% neg_probes, ]
+
+dim(target_AnatCompData_0.05)
+dim(target_AnatCompData_0.05_genefilter)
+#> Features  Samples 
+#>    10131      221
+
+# retain only detected genes of interest
+goi_0.05 <- goi[goi %in% rownames(target_AnatCompData_0.05)]
+
+
+```
+
+```{r}
+
+# Subset to target genes detected in at least 10% of the samples.
+#   Also manually include the negative control probe, for downstream use
+negativeProbefData <- subset(fData(target_AnatCompData_0.1), CodeClass == "Negative")
+neg_probes <- unique(negativeProbefData$TargetName)
+target_AnatCompData_0.1_genefilter <- 
+    target_AnatCompData_0.1[fData(target_AnatCompData_0.1)$DetectionRate >= 0.1 |
+                        fData(target_AnatCompData_0.1)$TargetName %in% neg_probes, ]
+
+dim(target_AnatCompData_0.1)
+
+dim(target_AnatCompData_0.1_genefilter)
+#> Features  Samples 
+#>    10131      221
+
+# retain only detected genes of interest
+goi <- goi[goi %in% rownames(target_AnatCompData_0.05)]
+```
+
+```{r}
+# Save the Pre-normalized Anatomical Comparison Data
+
+Anat_0.05seg_0.1gene <- target_AnatCompData_0.05_genefilter
+
+save(Anat_0.05seg_0.1gene, file = "Anat_0.05seg_0.1gene.Robj")
+
+Anat_0.1seg_0.1gene <- target_AnatCompData_0.1_genefilter
+
+save(Anat_0.1seg_0.1gene, file = "Anat_0.1seg_0.1gene.Robj")
+
+```
+
+Now we need to export the prenormalized data for Leonidas and Co.
+
+```{r}
+
+
+Exprs_data_0.05_filter <- exprs(Anat_0.05seg_0.1gene)
+
+Exprs_data_0.1_filter <- exprs(Anat_0.1seg_0.1gene)
+```
+
+```{r}
+
+library(openxlsx)
+
+
+print_TargetCountMatrix <- function(matrix = NULL, file_path = ""){
+  wb <- createWorkbook()
+  addWorksheet(wb, sheetName = "TargetCountMatrix")
+  
+  
+  writeData(wb, sheet = "TargetCountMatrix", x = matrix, 
+            colNames = TRUE, rowNames = TRUE)
+  
+  writeData(wb, sheet = "TargetCountMatrix", x = "TargetName", startCol = 1, startRow = 1)
+  
+  # Save the workbook to an Excel file
+  saveWorkbook(wb, file = file_path, overwrite = TRUE)
+}
+
+
+```
+
+```{r}
+
+
+print_TargetCountMatrix(matrix = Exprs_data_0.05_filter, file_path= "C:/Users/j789s948/Downloads/Exprs_data_0.05_filter.xlsx")
+
+
+print_TargetCountMatrix(matrix = Exprs_data_0.1_filter, file_path= "C:/Users/j789s948/Downloads/Exprs_data_0.1_filter.xlsx")
+```
+
+```{r}
+
+print_anat_comp_annotations <- function(data = NULL,  file_path = ""){
+  col_to_export = c("segment", "Slide.Name", "Region", "Patient")
+  
+  df_to_export <- pData(data)[, col_to_export] |>
+    rename(patient = Patient,
+           full_name = Slide.Name,
+           region = Region,
+           SegmentLabel = segment,) |>
+    mutate(
+      region_num = fct_recode(region, 
+                              "1" = "Fimbria",
+                              "2" = "Infundibulum",
+                              "3" = "Ampulla",
+                              "4" = "Isthmus")
+    )
+  
+  write.xlsx(df_to_export, file_path, rowNames = TRUE, colNames = TRUE)
+}
+
+
+
+
+
+```
+
+```{r}
+
+
+print_anat_comp_annotations(Anat_0.05seg_0.1gene, "C:/Users/j789s948/Downloads/Annotation_0.05_filter.xlsx")
+
+
+print_anat_comp_annotations(Anat_0.1seg_0.1gene, "C:/Users/j789s948/Downloads/Annotation_0.1_filter.xlsx")
+```
+
+# 5 Normalization
+
+We will now normalize the GeoMx data for downstream visualizations and differential expression. The two common methods for normalization of DSP-NGS RNA data are i) quartile 3 (Q3) or ii) background normalization.
+
+Both of these normalization methods estimate a normalization factor per segment to bring the segment data distributions together. More advanced methods for normalization and modeling are under active development. However, for most studies, these methods are sufficient for understanding differences between biological classes of segments and samples.
+
+Q3 normalization is typically the preferred normalization strategy for most DSP-NGS RNA studies. Given the low negative probe counts in this particular dataset as shown during Segment QC, we would further avoid background normalization as it may be less stable.
+
+Before normalization, we will explore the relationship between the upper quartile (Q3) of the counts in each segment with the geometric mean of the negative control probes in the data. Ideally, there should be a separation between these two values to ensure we have stable measure of Q3 signal. If you do not see sufficient separation between these values, you may consider more aggressive filtering of low signal segments/genes.
+
+```{r}
+
+quantileNorm <- function(object, toElt = "exprs_norm", fromElt = "exprs"){
+  # generate a new object with just relevant expression data
+  # exprs_data <- exprs(object)
+  
+  #rank each item in the object (1 for first expression level, 2 for second, etc.)
+  assayDataElement(object, "rank" , validate = TRUE) <- apply(assayDataElement(object, "exprs"),2,rank,ties.method="min")
+  
+  # #sort based on expression level
+  assayDataElement(object, "data_sorted" , validate = TRUE) <- apply(assayDataElement(object, "exprs"), 2, sort)
+
+  # find the mean for each row in the sorted_data
+  data_mean <- apply(assayDataElement(object, "data_sorted"), 1, mean)
+
+
+  index_to_mean <- function(my_index, my_mean)
+  {
+    return(my_mean[my_index])
+  }
+
+
+  # for each ranked data column, for each number (n) in that column, 
+  # apply to it the (nth) mean in the data_mean list
+  assayDataElement(object, toElt, validate = TRUE) <- apply(assayDataElement(object, "rank"), 2, index_to_mean, my_mean=data_mean)
+  
+
+  return(object)
+}
+```
+
+```{r}
+
+quantile_AnatCompData <- quantileNorm(target_AnatCompData_0.1_genefilter, toElt = "q_norm")
+
+quantile_AnatCompData_allgenes <- quantileNorm(target_AnatCompData_0.1, toElt = "q_norm")
+
+```
+
+```{r}
+
+save(quantile_AnatCompData, file = "C:/Users/j789s948/Documents/R_Studio_files/Anatomical_Comparison_GeoMx/data_output/Quantile_Norm_Anatomical_Comparison_11-21-23.Rdata")
+
+
+save(quantile_AnatCompData_allgenes, file = "C:/Users/j789s948/Documents/R_Studio_files/Anatomical_Comparison_GeoMx/data_output/Quantile_Norm_Anatomical_Comparison_allgenes_11-26-23.Rdata")
+
+
+```
+
+```{r}
+
+library(reshape2)
+library(cowplot)
+
+# Graph Q3 value vs negGeoMean of Negatives
+# ann_of_interest <- "region"
+# Stat_data <- 
+#     data.frame(row.names = colnames(exprs(target_AnatCompData_0.1_genefilter)),
+#                Segment = colnames(exprs(target_AnatCompData_0.1_genefilter)),
+#                Annotation = pData(target_AnatCompData_0.1_genefilter)[, ann_of_interest],
+#                Q3 = unlist(apply(exprs(target_AnatCompData_0.1_genefilter), 2,
+#                                  quantile, 0.75, na.rm = TRUE)),
+#                Quantile = unlist(apply(assayDataElement(quantile_AnatCompData, "q_norm"), 2,
+#                                  quantile, 0.75, na.rm = TRUE)),
+#                NegProbe = exprs(target_AnatCompData_0.1_genefilter)[neg_probes, ]
+#                
+#                )
+# Stat_data_m <- melt(Stat_data, measure.vars = c("Q3", "Quantile", "NegProbe"),
+#                     variable.name = "Statistic", value.name = "Value")
+# 
+# plt1 <- ggplot(Stat_data_m,
+#                aes(x = Value, fill = Statistic)) +
+#     geom_histogram(bins = 15) + theme_bw() +
+#     scale_x_continuous(trans = "log2") +
+#     facet_wrap(~Annotation, nrow = 1) + 
+#     scale_fill_brewer(palette = 3, type = "qual") +
+#     labs(x = "Counts", y = "Segments, #")
+# 
+# plt2 <- ggplot(Stat_data,
+#                aes(x = NegProbe, y = Q3, color = Annotation)) +
+#     geom_abline(intercept = 0, slope = 1, lty = "dashed", color = "darkgray") +
+#     geom_point() + guides(color = "none") + theme_bw() +
+#     scale_x_continuous(trans = "log2") + 
+#     scale_y_continuous(trans = "log2") +
+#     theme(aspect.ratio = 1) +
+#     labs(x = "Negative Probe GeoMean, Counts", y = "Q3 Value, Counts")
+# 
+# plt3 <- ggplot(Stat_data,
+#                aes(x = NegProbe, y = Q3 / NegProbe, color = Annotation)) +
+#     geom_hline(yintercept = 1, lty = "dashed", color = "darkgray") +
+#     geom_point() + theme_bw() +
+#     scale_x_continuous(trans = "log2") + 
+#     scale_y_continuous(trans = "log2") +
+#     theme(aspect.ratio = 1) +
+#     labs(x = "Negative Probe GeoMean, Counts", y = "Q3/NegProbe Value, Counts")
+# 
+# btm_row <- plot_grid(plt2, plt3, nrow = 1, labels = c("B", ""),
+#                      rel_widths = c(0.43,0.57))
+# plot_grid(plt1, btm_row, ncol = 1, labels = c("A", ""))
+```
+
+As expected, we see separation of the Q3 and negative probe counts at both the distribution (A) and per segment (B) levels. For additional conceptual guidance, please refer to our Data Analysis White Paper for DSP-NGS Assays.
+
+Next, we normalize our data. We will use Q3 normalized data moving forward. We use the normalize function from NanoStringNCTools to create normalization factors reflecting each data type. Upper quartile (Q3) normalization is performed using norm_method = "quant" setting the desiredQuantile flag to 0.75. Other quantiles could be specified by changing that value. We save the normalized data to a specific slot using toELT = "q_norm". Similarly background normalization is performed by setting norm_method = "neg" and toElt = "neg_norm".
+
+```{r}
+
+# # Q3 norm (75th percentile) for WTA/CTA  with or without custom spike-ins
+# target_AnatCompData <- normalize(target_AnatCompData ,
+#                              norm_method = "quant", 
+#                              desiredQuantile = .75,
+#                              toElt = "q_norm")
+# 
+# # Background normalization for WTA/CTA without custom spike-in
+# target_AnatCompData <- normalize(target_AnatCompData2 ,
+#                              norm_method = "neg", 
+#                              fromElt = "exprs",
+#                              toElt = "neg_norm")
+
+
+
+
+```
+
+```{r}
+# save(target_AnatCompData, file = "C:/Users/j789s948/Documents/R_Studio_files/Anatomical_Comparison_GeoMx/data_output/Q3_Norm_Anatomical_Comparison_10-2-23.Rdata")
+
+
+```
+
+To demonstrate the effects of normalization, we graph representative box plots of the data for individual segments before and after normalization.
+
+```{r}
+
+# visualize the first 10 segments with each normalization method
+# boxplot(exprs(target_AnatCompData)[,1:68],
+#         col = "#9EDAE5", main = "Raw Counts",
+#         log = "y", names = 1:68, xlab = "Segment",
+#         ylab = "Counts, Raw")
+
+
+boxplot(exprs(quantile_AnatCompData)[,1:68],
+        col = "#9EDAE5", main = "Raw Counts",
+        log = "y", names = 1:68, xlab = "Segment",
+        ylab = "Counts, Raw")
+
+
+```
+
+```{r}
+
+# boxplot(assayDataElement(target_AnatCompData2[,1:68], elt = "q_norm"),
+#         col = "#2CA02C", main = "Q3 Norm Counts",
+#         log = "y", names = 1:68, xlab = "Segment",
+#         ylab = "Counts, Q3 Normalized")
+
+
+boxplot(assayDataElement(quantile_AnatCompData[,1:68], elt = "q_norm"),
+        col = "#2CA02C", main = "Quantile Norm Counts",
+        log = "y", names = 1:68, xlab = "Segment",
+        ylab = "Counts, Q3 Normalized")
+
+
+
+
+```
+
+```{r}
+
+# boxplot(assayDataElement(target_AnatCompData2[,1:68], elt = "neg_norm"),
+#         col = "#FF7F0E", main = "Neg Norm Counts",
+#         log = "y", names = 1:68, xlab = "Segment",
+#         ylab = "Counts, Neg. Normalized")
+
+
+```
+
+# 6. Unsupervised Analysis
+
+## 6.1 UMAP & t-SNE
+
+One common approach to understanding high-plex data is dimension reduction. Two common methods are UMAP and tSNE, which are non-orthogonally constrained projections that cluster samples based on overall gene expression. In this study, we see by either UMAP (from the umap package) or tSNE (from the Rtsne package), clusters of segments related to structure (glomeruli or tubules) and disease status (normal or diabetic kidney disease).
+
+```{r}
+
+library(umap)
+library(Rtsne)
+
+# update defaults for umap to contain a stable random_state (seed)
+custom_umap <- umap::umap.defaults
+custom_umap$random_state <- 42
+# run UMAP
+# umap_out <-
+#     umap(t(log2(assayDataElement(target_AnatCompData , elt = "q_norm"))),  
+#          config = custom_umap)
+# pData(target_AnatCompData)[, c("UMAP1", "UMAP2")] <- umap_out$layout[, c(1,2)]
+# ggplot(pData(target_AnatCompData),
+#        aes(x = UMAP1, y = UMAP2, color = region, shape = segment)) +
+#     geom_point(size = 3) +
+#     theme_bw()
+
+
+
+umap_out2 <-
+    umap(t(log2(assayDataElement(quantile_AnatCompData , elt = "q_norm"))),  
+         config = custom_umap)
+pData(quantile_AnatCompData)[, c("UMAP1", "UMAP2")] <- umap_out2$layout[, c(1,2)]
+ggplot(pData(quantile_AnatCompData),
+       aes(x = UMAP1, y = UMAP2, color = Region, shape = segment)) +
+    geom_point(size = 3) +
+    theme_bw()+
+  geom_mark_ellipse(aes(x = UMAP1, y = UMAP2, fill = Patient), inherit.aes = FALSE)
+
+```
+
+```{r fig.height=6, fig.width=8}
+
+# run tSNE
+set.seed(42) # set the seed for tSNE as well
+# tsne_out <-
+#     Rtsne(t(log2(assayDataElement(target_AnatCompData , elt = "q_norm"))),
+#           perplexity = ncol(target_AnatCompData)*.15)
+# pData(target_AnatCompData)[, c("tSNE1", "tSNE2")] <- tsne_out$Y[, c(1,2)]
+# ggplot(pData(target_AnatCompData),
+#        aes(x = tSNE1, y = tSNE2)) +
+#     geom_point(aes( color = region, shape = segment), size = 3) +
+#     theme_bw()+
+#     geom_mark_ellipse(aes(x = tSNE1, y = tSNE2, fill = patient_number), inherit.aes = FALSE)
+
+
+tsne_out2 <-
+    Rtsne(t(log2(assayDataElement(quantile_AnatCompData , elt = "q_norm"))),
+          perplexity = ncol(quantile_AnatCompData)*.15)
+pData(quantile_AnatCompData)[, c("tSNE1", "tSNE2")] <- tsne_out2$Y[, c(1,2)]
+ggplot(pData(quantile_AnatCompData),
+       aes(x = tSNE1, y = tSNE2)) +
+    geom_point(aes( color = Region, shape = segment), size = 3) +
+    theme_bw()+
+    geom_mark_ellipse(aes(x = tSNE1, y = tSNE2, fill = Patient), inherit.aes = FALSE) + theme(text = element_text(size = 19))
+
+```
+
+## 6.2 Clustering high CV Genes
+
+Another approach to explore the data is to calculate the coefficient of variation (CV) for each gene ($$g$$) using the formula $$CV_g=SD_g/mean_g$$ . We then identify genes with high CVs that should have large differences across the various profiled segments. This unbiased approach can reveal highly variable genes across the study.
+
+We plot the results using unsupervised hierarchical clustering, displayed as a heatmap.
+
+```{r}
+
+# library(pheatmap)  # for pheatmap
+# # create a log2 transform of the data for analysis
+# assayDataElement(object = target_AnatCompData, elt = "log_q") <-
+#     assayDataApply(target_AnatCompData, 2, FUN = log, base = 2, elt = "q_norm")
+# 
+# # create CV function
+# calc_CV <- function(x) {sd(x) / mean(x)}
+# CV_dat <- assayDataApply(target_AnatCompData,
+#                          elt = "log_q", MARGIN = 1, calc_CV)
+# # show the highest CD genes and their CV values
+# sort(CV_dat, decreasing = TRUE)[1:5]
+# #>   CAMK2N1    AKR1C1      AQP2     GDF15       REN 
+# #> 0.5886006 0.5114973 0.4607206 0.4196469 0.4193216
+# 
+# # Identify genes in the top 3rd of the CV values
+# GOI <- names(CV_dat)[CV_dat > quantile(CV_dat, 0.8)]
+# pheatmap(assayDataElement(target_AnatCompData[GOI, ], elt = "log_q"),
+#          scale = "row", 
+#          show_rownames = FALSE, show_colnames = FALSE,
+#          border_color = NA,
+#          clustering_method = "average",
+#          clustering_distance_rows = "correlation",
+#          clustering_distance_cols = "correlation",
+#          breaks = seq(-3, 3, 0.05),
+#          color = colorRampPalette(c("red", "yellow2", "green3"))(120),
+#          annotation_col = 
+#              pData(target_AnatCompData)[, c("patient_number", "segment", "region")])
+
+
+
+```
+
+```{r}
+
+library(pheatmap)
+assayDataElement(object = quantile_AnatCompData, elt = "log_q") <-
+    assayDataApply(quantile_AnatCompData, 2, FUN = log, base = 2, elt = "q_norm")
+
+# create CV function
+calc_CV <- function(x) {sd(x) / mean(x)}
+CV_dat <- assayDataApply(quantile_AnatCompData,
+                         elt = "log_q", MARGIN = 1, calc_CV)
+# show the highest CD genes and their CV values
+sort(CV_dat, decreasing = TRUE)[1:5]
+#>   CAMK2N1    AKR1C1      AQP2     GDF15       REN 
+#> 0.5886006 0.5114973 0.4607206 0.4196469 0.4193216
+
+# Identify genes in the top 3rd of the CV values
+GOI <- names(CV_dat)[CV_dat > quantile(CV_dat, 0.8)]
+pheatmap(assayDataElement(quantile_AnatCompData[GOI, ], elt = "log_q"),
+         scale = "row", 
+         show_rownames = FALSE, show_colnames = FALSE,
+         border_color = NA,
+         clustering_method = "average",
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         breaks = seq(-3, 3, 0.05),
+         color = colorRampPalette(c("red", "yellow2", "green3"))(120),
+         annotation_col = 
+             pData(target_AnatCompData)[, c("Patient", "segment", "Region")])
+
+
+```
+
+# Differential Expression
+
+A central method for exploring differences between groups of segments or samples is to perform differential gene expression analysis. A common statistical approach is to use a linear mixed-effect model (LMM). The LMM allows the user to account for the subsampling per tissue; in other words, we adjust for the fact that the multiple regions of interest placed per tissue section are not independent observations, as is the assumption with other traditional statistical tests. The formulation of the LMM model depends on the scientific question being asked.
+
+Overall, there are two flavors of the LMM model when used with GeoMx data: i) with and ii) without random slope.
+
+When comparing features that co-exist in a given tissue section (e.g. glomeruli vs tubules in DKD kidneys), a random slope is included in the LMM model. When comparing features that are mutually exclusive in a given tissue section (healthy glomeruli versus DKD glomeruli) the LMM model does not require a random slope. We represent the two variations on the LMM in the schematic below:
+
+![For more details on the LMM, please refer to the lme4 package and the lmerTest package.](images/Linear%20Mixed%20Model%20Example.PNG)
+
+## 7.1 Within Slide Analysis: Ciliated vs Secretory
+
+One informative exploration is to study differences between morphological structures. In this example, we can study differential expression between glomeruli and tubules. We will focus on the diseased kidney tissues. Because we are comparing structures that co-exist within the a given tissue we will use the LMM model with a random slope. Morphological structure (`Region`) is our test variable. We control for tissue subsampling with `slide name` using a random slope and intercept; the intercept adjusts for the multiple regions placed per unique tissue, since we have one tissue per slide. If multiple tissues are placed per slide, we would change the intercept variable to the unique tissue name (ex: tissue name, Block ID, etc).
+
+In this analysis we save log~2~ fold change estimates and P-values across all levels in the factor of interest. We also apply a Benjamini-Hochberg multiple test correction.
+
+## Exporting specific probe info
+
+```{r}
+
+TXNIP <- AnatCompData_AfterProbeQC[fData(AnatCompData_AfterProbeQC)[["TargetName"]]=="TXNIP"]
+
+```
+
+# Plot Probe Expression
+
+```{r}
+
+Probe_Anat_Boxplot_Points <- function(probe = "RTS0045226", point_size = 3, dataset = ST6GAL1){
+  
+  # %in% checks to see if a name is in a list. 
+  # I define not in (%ni%) to do the opposite (check if NOT in the list)
+  `%ni%` <- Negate(`%in%`)
+  gene_not_found <- c()
+  if(probe %ni% rownames(assayDataElement(dataset, elt = "exprs"))){
+    return(paste0(probe, " not in list"))
+  }
+
+    plot <- ggplot(
+      pData(dataset), 
+      aes(x = Region,
+          y = as.vector(assayDataElement(dataset[probe, ], elt = "exprs")),
+          fill = Region
+          )
+      )+
+      geom_boxplot(outlier.shape = NA) +
+      labs(title = TeX(paste0("\\textit{", probe, "} Expression")), 
+           y = TeX(paste0("\\textit{", probe, "} Expression")),
+           x = "Anatomical Region")+
+      facet_wrap(~segment)+
+  
+      geom_jitter(size = point_size, width = 0.25, stroke = 1.3, aes(shape = Patient))+
+  
+      scale_shape_manual(values = c(21, 22, 23))+
+  
+      theme_bw()+
+  
+      scale_x_discrete(labels=c("Fim","Inf","Amp", "Isth"))+
+      scale_fill_manual(values= c("#7CAE00", "#00C1C6", "#F8766D", "#C77CFF"))+
+  
+      theme(axis.text.x = element_text(size = 15),
+            axis.text.y = element_text(size = 12),
+            axis.title.y = element_text(size = 15),
+            axis.title.x = element_text(size = 15),
+            legend.text = element_text(size =12),
+            legend.title = element_text(size = 12),
+            strip.text = element_text(size = 15))
+
+
+    return(plot)
+}
+
+
+
+remove_legend <- function(plot){
+  plot + theme(legend.position = "none")
+}
+
+
+remove_nonggplot <- function(list){
+  return(purrr::keep(list, is.ggplot))
+}
+
+
+
+
+```
+
+```{r}
+
+
+txnip_list <- rownames(fData(TXNIP))
+
+lapply(X = txnip_list, FUN = Probe_Anat_Boxplot_Points)
+
+
+
+
+
+```
+
+```{r}
+
+
+ST6GAL1 <- AnatCompData_AfterProbeQC[fData(AnatCompData_AfterProbeQC)[["TargetName"]]=="ST6GAL1"]
+
+```
+
+```{r}
+
+
+ST6GAL1_list <- rownames(fData(ST6GAL1))
+
+lapply(X = ST6GAL1_list, data = ST6GAL1, FUN = Probe_Anat_Boxplot_Points)
+
+```
