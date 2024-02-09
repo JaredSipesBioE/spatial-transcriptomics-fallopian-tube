@@ -1,21 +1,8 @@
 ---
-title: "Data Analysis of Anatomical Comparison Dataset"
+title: "Spatial Transcriptomics Analysis of the Human Fallopian Tube Epithelium"
 _output: html_notebook
 ---
 
-```{r setup}
-    knitr::opts_knit$set(root.dir ="C:/Users/j789s948/Documents/R_Studio_files/Anatomical_Comparison_GeoMx") 
-    
-getwd()
-```
-
-# 0. Summary of Notebook
-
-This summary incorporates all plates for the anatomical comparison analysis up to plates 9-10, skipping the plates 7 and 8 which had sequencing issues.
-
-QC is done up to the Normalization and output files are prepared to send to Leonidas and team.
-
-Last updated 10-27-23
 
 # 1. Introduction and Setup
 
@@ -23,18 +10,23 @@ This analysis is based on the following Bioconductor vignette:
 
 [Analyzing GeoMx-NGS RNA Expression Data with GeomxTools (bioconductor.org)](https://www.bioconductor.org/packages/release/workflows/vignettes/GeoMxWorkflows/inst/doc/GeomxTools_RNA-NGS_Analysis.html#5_Normalization)
 
-Eventually, an interactive analysis tool should be developed with R-Shiny to permit the majority of this analysis to be performed by non-R users.
+We analyze four different anatomical regions of the Fallopian tube: isthmus, ampulla, infundibulum, and fimbria. 
+
+Slides are stained for markers of ciliated (FOXJ1) and Secretory (PAX8) and regions of interest are segmented based on these markers. 
+
+This script takes input files (dccs, annotations, and pkc files) and creates a GeoMx Data object. It then performs several filtering and quality control steps following the recommendations provided by Nanostring. Finally, the output is normalized to create the final dataset. 
+
 
 ## 1.1 Required Packages
 
 Run the following script to upload packages as needed. If asked to make further installations, type y for "yes" or "a" for all updates, as needed.
 
 ```{r}
-# 
+
 # if (!require("BiocManager", quietly = TRUE))
 #     install.packages("BiocManager")
-
-# The following initializes most up to date version of Bioc
+# 
+# # The following initializes most up to date version of Bioc
 # BiocManager::install(version="3.15")
 # 
 # BiocManager::install("NanoStringNCTools")
@@ -42,7 +34,7 @@ Run the following script to upload packages as needed. If asked to make further 
 # BiocManager::install("GeoMxWorkflows")
 
 # Note:
-# Needed to install package lme4, numderiv
+# Need to install package lme4, numderiv
 library(NanoStringNCTools)
 library(GeomxTools)
 library(GeoMxWorkflows)
@@ -75,6 +67,7 @@ library(tidyverse)
 library(dplyr)
 library(ggforce)
 library(writexl)
+library(here)
 ```
 
 ## 1.2 Loading Data
@@ -110,51 +103,29 @@ We need three different types of files to create the initial dataset:
 
 -   Annotation file - this will contain information about the tissue, segment area and nuclei count, and any other info you choose to provide.
 
-    -   For new datasets, use lab worksheet from the readout package.
 
 We are just going to load all of the dcc files available along with basic annotations for all, then remove unneeded dccs later on.
 
 Now, let's test this to see if we can successfully create the GeoMx dataset object from these files.
 
-```{r}
 
-# blank_annotations <- readxl::read_xlsx("C:/Users/j789s948/Documents/GeoMx Data Analysis/input_files/annotations/Blank_Annotations.xlsx")
-# 
-# main_annotations <- readxl::read_xlsx("C:/Users/j789s948/Documents/GeoMx Data Analysis/input_files/annotations/Main_Annotations_File_10-27-23.xlsx")
-# 
-# cols_to_merge = c("Sample_ID", "Ovulation", "CM_CoCulture_Control", "Tissue", "Region", "Days", "Treatment", "Patient", "Experiment")
-# 
-# merged_doc <- base::merge(blank_annotations, main_annotations[ , cols_to_merge], by = "Sample_ID", all.X = TRUE, all.Y= TRUE, sort = FALSE)
 
-```
 
 ```{r}
 
+# The following function takes your directory and appends data_input
 
-# writexl::write_xlsx(merged_doc, "C:/Users/j789s948/Downloads/Ordered_Annotations_10-27-23.xlsx")
-
-
-```
-
-```{r}
-
-# Reference the main folder 'file.path' containing the sub-folders with each
-# data file type:
-
-datadir <- file.path("~/R_Studio_files/Anatomical_Comparison_GeoMx/data_input")
+datadir <- here('data_input')
 
 # automatically list files in each directory for use
-DCCFiles <- dir(file.path(datadir, "dccs"), pattern = "*.dcc",
+DCCFiles <- dir(here(datadir, "dccs"), pattern = "*.dcc",
                 full.names = TRUE, recursive = TRUE)
 
 
-PKCFiles <- dir(file.path(datadir, "pkcs"), pattern = ".pkc$",
+PKCFiles <- dir(here(datadir, "pkcs"), pattern = ".pkc$",
                                 full.names = TRUE, recursive = TRUE)
 
-
-#Note that we add "Anatomical to ensure we open the correct annotation file
-#### IMPORTANT #### make sure to change to appropriate file
-SampleAnnotationFile <- dir(file.path(datadir, "annotation"), pattern = "10-27-23.xlsx$",
+SampleAnnotationFile <- dir(here(datadir, "annotation"), pattern = ".xlsx$",
       full.names = TRUE, recursive = TRUE)
 
 
