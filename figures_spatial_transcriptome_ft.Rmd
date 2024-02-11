@@ -1,0 +1,989 @@
+---
+title: "Plots_Anat_Comp_V1"
+output:
+  html_document:
+    df_print: paged
+date: "11-21-2023"
+---
+
+# Overview
+
+The following notebook is a record of all of the graphs needed for the ft spatial transcriptome  project, sorted by figure.
+
+
+# 1. Load all necessary libraries
+
+```{r}
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+
+# The following initializes most up to date version of Bioc
+# BiocManager::install(version="3.15")
+# 
+# BiocManager::install("NanoStringNCTools")
+# BiocManager::install("GeomxTools")
+# BiocManager::install("GeoMxWorkflows")
+
+# Note:
+# Needed to install package lme4, numderiv
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+
+if(packageVersion("GeomxTools") < "2.1" & 
+   packageVersion("GeoMxWorkflows") >= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. Please use the same version. 
+    This workflow is meant to be used with most current version of packages. 
+    If you are using an older version of Bioconductor please reinstall GeoMxWorkflows and use vignette(GeoMxWorkflows) instead")
+}
+
+if(packageVersion("GeomxTools") > "2.1" & 
+   packageVersion("GeoMxWorkflows") <= "1.0.1"){
+    stop("GeomxTools and Workflow versions do not match. 
+         Please use the same version, see install instructions above.")
+    
+    # to remove current package version
+        # remove.packages("GeomxTools")
+        # remove.packages("GeoMxWorkflows")
+    # see install instructions above 
+}
+```
+
+```{r}
+# for file names
+library(here)
+
+# read in xl files 
+library(readxl)
+
+
+# Need for UMAP, tSNE plots
+library(umap)
+library(Rtsne)
+
+# Needed for the heatmap plotting
+library(ComplexHeatmap) 
+
+#Needed for volcano plotting functions
+
+library(ggrepel)
+library(ggplot2)
+library(latex2exp)
+library(plyr)
+library(dplyr)
+
+
+
+# needed for merging multiple plots into one output 
+library(cowplot)
+
+# used for some color palettes  
+library(RColorBrewer)
+library(stringi)
+
+
+# For significance
+library(ggpubr)
+
+
+# For Stitching multiple plots together
+library(patchwork)
+
+```
+
+# 2. Load the Dataset and all Analyses Used
+
+```{r}
+
+# make sure to use correct "here" function.
+
+load(here::here("Quantile_Norm_Anatomical_Comparison.Rdata"))
+
+
+quantile_data <- quantile_AnatCompData
+
+
+ 
+```
+
+```{r}
+
+
+pData(quantile_data)$Region <- factor(pData(quantile_data)$Region, levels = c("Fimbria", "Infundibulum", "Ampulla", "Isthmus"))
+
+
+```
+
+```{r}
+
+
+load(here::here("Quantile_Norm_Anatomical_Comparison_allgenes.Rdata"))
+
+quantile_data_all <- quantile_AnatCompData_allgenes
+```
+
+```{r}
+
+
+pData(quantile_data_all)$Region <- factor(pData(quantile_data_all)$Region, levels = c("Fimbria", "Infundibulum", "Ampulla", "Isthmus"))
+
+```
+
+Looking at specific genes with boxplots
+
+```{r}
+
+factor(pData(quantile_data)$Region, levels = c("Fimbria", "Infundibulum", "Ampulla", "Isthmus"))
+
+revalue(pData(quantile_data)$Region, c("Fimbria"="Fim", "Infundibulum"="Inf", "Ampulla" = "Amp", "Isthmus" = "Isth"))
+```
+
+
+# 3. Load All Functions created for this project
+
+## FUNCT Volcano_Plot
+
+```{r}
+Volcano_Plot <- function(
+    df = NULL,
+    highlight_genes = c(), #empty list
+    title_name = NULL,
+    upreg = NULL,
+    downreg = NULL,
+    xmin = -3,
+    xmax = 3,
+    lab_size = 3
+){
+  if(is.null(upreg) & is.null(downreg)){
+    FC_name = TeX("$log_2(FC)$")
+  }
+  else{
+    FC_name = TeX(paste0("$log_2(\\frac{\\mu_{", upreg, "}}{\\mu_{", downreg, "}})$"))
+  }
+  if(is.null(title_name)){
+    title_name = deparse(substitute(df))
+  }
+ df$color <- "NS or FC < 0.5"
+
+  df$color[df$log_fold > 0.5 & df$p_value < 0.05] <- "Upregulated"
+  df$color[df$log_fold < -0.5 & df$p_value < 0.05] <- "Downregulated"
+  df$color <- factor(df$color,
+                        levels = c("NS or FC < 0.5", "Upregulated", "Downregulated"))
+  
+  genes_to_label <- filter(df, df$color != "NS or FC < 0.5")
+  
+
+  ggplot(df, aes(x = log_fold, y = minuslog10_Pvalue))+
+    geom_point(aes(color = color)) +
+    labs(title = title_name, x = FC_name, y = TeX("$-log_{10}(p_{value})$"))+
+    xlim(xmin, xmax)+
+    theme(plot.title = element_text(size = 8),
+          axis.title = element_text(size = 7))+
+
+    # coord_cartesian(ylim= c(0, 10))+
+
+    scale_color_manual(values = c(`Downregulated` = "blue",
+                                  `Upregulated` = "red",
+                                  `NS or FC < 0.5` = "gray"),
+                       guide = guide_legend(override.aes = list(size = 3)))+
+
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "blue")+
+    geom_vline(xintercept = -0.5, linetype = "dashed", color = "blue")+
+
+    # add lines at p-value cut-offs
+    geom_hline(yintercept = 1.3, linetype = "dashed", color = "red")+
+
+
+    # highlight desired genes
+        # geom_point(data = df[df$Marker.name %in% highlight_genes],
+        #        aes(x = log_fold, y = minuslog10_Pvalue),
+        #        color = "darkorchid"
+        #        )+
+
+    # Now add labels to both the up and down regulated genes
+
+    geom_label_repel(data = subset(subset(genes_to_label, log_fold > 0), p_value < 1.5),
+                     aes(label = Marker.name,
+                         x = log_fold,
+                         y = minuslog10_Pvalue),
+                     xlim = c(0, 3),
+                     # xlim = c(1, NA)
+                    # # nudge_x = c(0.5, -0.5),
+                    # nudge_y = c(0.2, -0.2),
+                    # box.padding = unit(0.5, "lines"),
+                    # point.padding = unit(.3+3*0.1, "lines"),
+                    # max.time = 100,
+                    # max.iter = 10^6,
+                    size = lab_size,
+                    max.overlaps = 40
+                    )+
+        geom_label_repel(data = subset(subset(genes_to_label, log_fold > 0), p_value > 2),
+                     aes(label = Marker.name,
+                         x = log_fold,
+                         y = minuslog10_Pvalue),
+                     xlim = c(0, 3),
+                     # xlim = c(1, NA)
+                    # nudge_x = c(0.5, -0.5),
+                    # nudge_y = c(0.2, -0.2),
+                    # box.padding = unit(0.5, "lines"),
+                    # point.padding = unit(.3+3*0.1, "lines"),
+                    # max.time = 100,
+                    # max.iter = 10^6,
+                    size = lab_size,
+                    max.overlaps = 20
+                    )+
+    geom_label_repel(data = subset(genes_to_label, log_fold < 0),
+                     aes(label = Marker.name,
+                         x = log_fold,
+                         y = minuslog10_Pvalue),
+                     xlim = c(NA, 0),
+                     # ylim = c()
+                    # nudge_x = c(0.5, -0.5),
+                    # nudge_y = c(0.2, -0.2),
+                    # box.padding = unit(0.5, "lines"),
+                    # point.padding = unit(.3+3*0.1, "lines"),
+                    # max.time = 100,
+                    # max.iter = 10^6,
+                    size = lab_size,
+                    max.overlaps = 50
+                    )+
+
+    theme_light(base_size = 16, base_family = "sans")+
+
+    # remove dumb grid-lines
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())+
+    labs(color = "Color")+
+    theme(legend.position = "none")
+}
+
+```
+
+## FUNCT: Patient_Anat_Boxplot_Points
+
+```{r}
+
+
+Patient_Anat_Boxplot_Points <- function(gene = "FOXJ1", point_size = 3, dataset = quantile_data){
+  
+  # %in% checks to see if a name is in a list. 
+  # I define not in (%ni%) to do the opposite (check if NOT in the list)
+  `%ni%` <- Negate(`%in%`)
+  gene_not_found <- c()
+  if(gene %ni% rownames(assayDataElement(dataset, elt = "q_norm"))){
+    return(paste0(gene, " not in list"))
+  }
+
+    plot <- ggplot(
+      pData(dataset), 
+      aes(x = Region,
+          y = as.vector(assayDataElement(dataset[gene, ], elt = "q_norm")),
+          fill = Region
+          )
+      )+
+      geom_boxplot(outlier.shape = NA) +
+      labs(title = TeX(paste0("\\textit{", gene, "} Expression")), 
+           y = TeX(paste0("\\textit{", gene, "} Expression")),
+           x = "Anatomical Region")+
+      facet_wrap(~Patient)+
+  
+      geom_jitter(size = point_size, width = 0.25, stroke = 1.3, aes(shape = Patient))+
+  
+      scale_shape_manual(values = c(21, 22, 23))+
+  
+      theme_bw()+
+  
+      scale_x_discrete(labels=c("Fim","Inf","Amp", "Isth"))+
+  
+      theme(axis.text.x = element_text(size = 15),
+            axis.text.y = element_text(size = 12),
+            axis.title.y = element_text(size = 15),
+            axis.title.x = element_text(size = 15),
+            legend.text = element_text(size =12),
+            legend.title = element_text(size = 12),
+            strip.text = element_text(size = 15))
+
+
+    return(plot)
+}
+
+```
+
+
+## FUNCT: Cil_v_Sec_Anat_Boxplot
+
+```{r}
+
+Cil_v_Sec_Anat_Boxplot <- function(gene_name = "FOXJ1", point_size = 1.5, dataset = quantile_data){
+
+  plot_list <- list()
+  for (gene in gene_name) {
+plot <- ggplot(
+  pData(dataset), 
+  aes(x = Region),
+      y = as.vector(assayDataElement(dataset[gene, ], elt = "q_norm")),
+      fill = Region
+      )+
+    geom_boxplot() +
+  labs(title = TeX(paste0("\\textit{", gene, "} Expression")), y = TeX(paste0("\\textit{", gene, "} Expression")), x = "Anatomical Region")+
+  facet_wrap(~segment)+
+  geom_jitter(size = point_size, width = 0.15, aes(fill = Patient, shape = Patient))+
+  scale_fill_grey(start = 0.8, end = 0.2) +
+  theme_bw()
+
+len <- length(plot_list)
+plot_list[[len+1]] <- plot
+
+  }
+  
+  return(plot_list)
+}
+
+```
+
+
+## FUNCT: Cil_v_Sec_Anat_Boxplot_Points
+
+
+```{r}
+
+Cil_v_Sec_Anat_Boxplot_Points <- function(gene = "FOXJ1", point_size = 3, dataset = quantile_data){
+  
+  # %in% checks to see if a name is in a list. 
+  # I define not in (%ni%) to do the opposite (check if NOT in the list)
+  `%ni%` <- Negate(`%in%`)
+  gene_not_found <- c()
+  if(gene %ni% rownames(assayDataElement(dataset, elt = "q_norm"))){
+    return(paste0(gene, " not in list"))
+  }
+
+    plot <- ggplot(
+      pData(dataset), 
+      aes(x = Region,
+          y = as.vector(assayDataElement(dataset[gene, ], elt = "q_norm")),
+          fill = Region
+          )
+      )+
+      geom_boxplot(outlier.shape = NA) +
+      labs(title = TeX(paste0("\\textit{", gene, "} Expression")), 
+           y = TeX(paste0("\\textit{", gene, "} Expression")),
+           x = "Anatomical Region")+
+      facet_wrap(~segment)+
+  
+      geom_jitter(size = point_size, width = 0.25, stroke = 1.3, aes(shape = Patient))+
+  
+      scale_shape_manual(values = c(21, 22, 23))+
+  
+      theme_bw()+
+  
+      scale_x_discrete(labels=c("Fim","Inf","Amp", "Isth"))+
+      scale_fill_manual(values= c("#7CAE00", "#00C1C6", "#F8766D", "#C77CFF"))+
+  
+      theme(axis.text.x = element_text(size = 15),
+            axis.text.y = element_text(size = 12),
+            axis.title.y = element_text(size = 15),
+            axis.title.x = element_text(size = 15),
+            legend.text = element_text(size =12),
+            legend.title = element_text(size = 12),
+            strip.text = element_text(size = 15))
+
+
+    return(plot)
+}
+
+```
+
+## FUNCT: remove_legend
+
+```{r}
+
+remove_legend <- function(plot){
+  plot + theme(legend.position = "none")
+}
+```
+
+
+## FUNCT: remove_nonggplot
+
+```{r}
+
+remove_nonggplot <- function(list){
+  return(purrr::keep(list, is.ggplot))
+}
+
+
+```
+
+## FUNCT: get_upreg | get_down_reg
+```{r}
+
+# These two functions provide an easy way to output a list of upregulated and downregulated genes 
+
+get_upreg <- function(df = NULL){
+  df$Marker.name[df$log_fold > 0.5 & df$p_value < 0.05]
+}
+
+
+get_downreg <- function(df = NULL){
+  df$Marker.name[df$log_fold < -0.5 & df$p_value < 0.05]
+}
+
+```
+
+
+## FUNCT: add_sig
+
+```{r}
+
+my_comparisons = list(
+    c("Fimbria", "Isthmus"),
+    c("Fimbria", "Infundibulum"), 
+    c("Infundibulum", "Ampulla"), 
+    c("Ampulla", "Isthmus")
+    )
+
+
+add_sig <- function(plot, comparisons_wanted = my_comparisons, pnt = 5){
+  plot <- plot + 
+    stat_compare_means(
+      comparisons = comparisons_wanted, 
+      method = "t.test", 
+      bracket.nudge.y = -0.5,
+      size = pnt)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.10)))
+  return (plot)
+}
+
+
+add_sig_pwc <- function(plot, pnt = 5){
+  plot <- plot + geom_pwc(aes(group = Region), method = "t_test", size = pnt)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+  return(plot)
+}
+```
+
+## FUNCT: adj_text_size
+
+```{r}
+adj_text_size <- function(plot, pnt = 20){
+  plot <- plot + theme(
+    text = element_text(size = pnt),
+    axis.text.x = element_text(size = pnt),
+    axis.text.y = element_text(size = pnt),
+    axis.title.y = element_text(size = pnt),
+    axis.title.x = element_text(size = pnt),
+    legend.text = element_text(size = pnt),
+    legend.title = element_text(size = pnt),
+    strip.text = element_text(size = pnt)
+    )
+  
+  return(plot)
+}
+
+
+```
+
+
+# Figure 1: Experimental Design
+
+## Figure 1A-F
+
+No graphs, images only. See paper.
+
+## Figure 1G
+
+Provided in normalization and quality control workflow
+
+## Figure 1H 
+
+Comparison of FOXJ1 and PAX8 Expression
+
+```{r fig.height=10, fig.width=20}
+
+Cil_v_Sec_Boxplot_Points <- function(gene = "FOXJ1", point_size = 3){ 
+
+    plot <- ggplot(
+      pData(quantile_data),
+      aes(x = segment,
+          y = as.vector(assayDataElement(quantile_data[gene, ], elt = "q_norm")),
+          fill = segment
+          )
+      )+
+      geom_boxplot(outlier.shape = NA)+
+      labs(title = TeX(paste0("\\textit{", gene, "} Expression")),
+           y = TeX(paste0("\\textit{", gene, "} Expression")),
+           x = "Cell Type")+
+      
+      geom_jitter(size = point_size, width = 0.25, stroke = 0.3)+
+
+      # geom_jitter(size = point_size, width = 0.25, stroke = 1.3, 
+      #             aes(shape = patient))+
+
+      # scale_shape_manual(values = c(21, 22, 23))+
+      scale_fill_manual(values =c("green", "red"))+
+      
+      
+
+      theme_bw()#+
+      # 
+      # theme(axis.text.x = element_text(size = 15),
+      #       axis.text.y = element_text(size = 12),
+      #       axis.title.y = element_text(size = 15),
+      #       axis.title.x = element_text(size = 15),
+      #       legend.text = element_text(size =12),
+      #       legend.title = element_text(size = 12),
+      #       strip.text = element_text(size = 15))
+    
+  
+  return(plot)
+
+}
+
+
+
+```
+
+```{r fig.height=6, fig.width=12}
+
+
+
+FOXJ1 <- Cil_v_Sec_Boxplot_Points("FOXJ1")+ theme(text=element_text(size=30))
+
+PAX8 <- Cil_v_Sec_Boxplot_Points("PAX8")+ theme(text=element_text(size=30))
+
+
+FOXJ1 + PAX8 + plot_layout(guides = 'collect') 
+```
+
+
+
+# Figure 2: Regional Comparisons 
+
+## Import Figure 2 Data
+
+Import regional comparisons 
+
+```{r}
+
+# add all statistical analysis files to a list
+
+my_file_path = here::here("stat_analysis/")
+
+files <- list.files(my_file_path, pattern = ".xlsx$")
+
+
+
+
+
+```
+
+
+```{r}
+
+# Loop through each file, read it into a dataframe, and assign a name based on the filename
+
+# df_list <- list()
+
+
+for (file in files){
+  # read in sheet names
+  list_sheets <- excel_sheets(path = here::here(my_file_path, file))
+  for (sheet in list_sheets){
+    # read the sheet into a dataframe
+    df <- readxl::read_xlsx(here::here(my_file_path, file), sheet = sheet)
+      
+    name <- paste0(
+      # Extract the filename without the extension and other junk
+        gsub(" ", "", gsub(".xlsx", "", file)),
+      # add the sheet name
+      sheet) |>
+      # Simplify names
+      stri_replace_all_regex(
+        pattern=c("SECRETORY", "CILIATED", "Ampulla", "Infundibulum", 
+                  "Fimbria", "Isthmus", "_One.VS.Others_", 
+                  "_Region.Mean_ttest.ANOVA.pvalue_for_markers", 
+                  "0.10_", "region_comparison"),
+        
+        replacement=c("Sec", "Cil", "Amp", "Inf", 
+                      "Fim", "Isth", "", 
+                      "_ANOVA_", 
+                      "", ""), 
+        vectorize = FALSE
+      )
+    
+    # Assign the dataframe to the filename without extension
+    assign(name, df)
+  }
+}
+
+# for (i in seq_along(files)) {
+#   excel_sheets(path = paste0(my_file_path, files[i]))
+#   # Read the file into a dataframe
+#   df <- readxl::read_xlsx(file.path(path, files[i]))
+# 
+#   # Extract the filename without the extension
+#   name <- gsub(" ", "", gsub("\\.xlsx", "", files[i]))
+# 
+#   # Assign the dataframe to the filename without extension
+#   assign(name, df)
+#   
+#   df_list <- list(df)
+# }
+
+
+```
+
+
+## Figure 2A-D
+
+
+```{r fig.height=5, fig.width=8}
+Volcano_Plot(SecAmp.vs.Others, title = "Gene Changes in Ampulla Secretory Cells", downreg = "Others", upreg = "Ampulla", lab_size = 6) + theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+Volcano_Plot(SecFim.vs.Others, title = "Gene Changes in Fimbria Secretory Cells", downreg = "Others", upreg = "Fimbria", lab_size = 5)+ theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+
+Volcano_Plot(SecInf.vs.Others, title = "Gene Changes in Infundibulum Secretory Cells", downreg = "Others", upreg = "Infundibulum", lab_size = 5)+ theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+Volcano_Plot(SecIsth.vs.Others, title = "Gene Changes in Isthmus Secretory Cells", downreg = "Others", upreg = "Isthmus", lab_size = 5)+ theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+```
+
+## Figure E-F
+
+Figures E-F are images. See paper.
+
+## Figure 2G-J
+
+```{r fig.height=5, fig.width=8}
+
+Volcano_Plot(CilAmp.vs.Others, title = "Gene Changes in Ampulla Ciliated Cells", downreg = "Others", upreg = "Ampulla", lab_size = 5) + theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+ 
+
+Volcano_Plot(CilFim.vs.Others, title = "Gene Changes in Fimbria Ciliated Cells", downreg = "Others", upreg = "Fimbria", lab_size =5) + theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+
+Volcano_Plot(CilInf.vs.Others, title = "Gene Changes in Infundibulum Ciliated Cells", downreg = "Others", upreg = "Infundibulum", lab_size = 5) + theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+
+Volcano_Plot(CilIsth.vs.Others, title = "Gene Changes in Isthmus Ciliated Cells", downreg = "Others", upreg = "Isthmus", lab_size = 5) + theme(axis.text = element_text(size = 25),
+            axis.title =  element_text(size = 23))
+
+
+```
+
+
+
+# Figure 3: Markers of mature ciliated cells and peg cells
+
+## Figure 3B-C
+
+```{r fig.height=5, fig.width=10}
+
+
+
+# Ascending Secretory approaching Isthmus
+
+Fig3 <- c("FOXJ1", "PAX8")
+
+
+graphs_up_Fig3 <- lapply(X = Fig3, FUN = Cil_v_Sec_Anat_Boxplot_Points)
+
+legend <- cowplot::get_legend(
+   Cil_v_Sec_Anat_Boxplot_Points("ESR1")+
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom") + 
+    theme(
+      legend.text = element_text(size = 15),
+      legend.title = element_text(size = 16),
+      legend.spacing = unit(30, "pt")
+      )+
+     guides(shape = guide_legend(override.aes = list(size = 5)))+
+     theme(legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(0.5, 'cm'))
+  )
+
+Fig3_resize <- lapply(graphs_up_Fig3, adj_text_size, pnt = 17)
+Fig3_remove_legend <- lapply(Fig3_resize, remove_legend)
+Fig3_sig <- lapply(Fig3_remove_legend, add_sig, pnt = 4)
+
+
+grid_plot <- do.call(plot_grid, Fig3_sig)
+
+
+plot_grid(grid_plot, legend, ncol = 1, rel_heights = c(1.1, 0.3))
+
+
+```
+
+
+## Figure 3D-G
+
+
+## Figure 3I-J
+
+```{r fig.height=5, fig.width=10}
+
+
+Fig3 <- c("LGR5", "COL1A2")
+
+
+
+graphs_up_Fig3 <- lapply(X = Fig3, FUN = Cil_v_Sec_Anat_Boxplot_Points)
+
+legend <- cowplot::get_legend(
+   Cil_v_Sec_Anat_Boxplot_Points("ESR1")+
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom") + 
+    theme(
+      legend.text = element_text(size = 15),
+      legend.title = element_text(size = 16),
+      legend.spacing = unit(30, "pt")
+      )+
+     guides(shape = guide_legend(override.aes = list(size = 5)))+
+     theme(legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(0.5, 'cm'))
+  )
+
+Fig3_resize <- lapply(graphs_up_Fig3, adj_text_size, pnt = 17)
+Fig3_remove_legend <- lapply(Fig3_resize, remove_legend)
+Fig3_sig <- lapply(Fig3_remove_legend, add_sig, pnt = 4)
+
+
+grid_plot <- do.call(plot_grid, Fig3_sig)
+
+
+plot_grid(grid_plot, legend, ncol = 1, rel_heights = c(1.1, 0.3))
+
+
+```
+
+
+## Figure 3K-N
+
+
+
+
+
+# Figure 4: Selected Boxplots
+
+Boxplots of differentially expressed transcripts related to hormone receptors, response to ROS, and complement/
+
+```{r fig.height=25, fig.width=25}
+
+
+
+# Ascending Secretory approaching Isthmus
+
+FigA <- c("ESR1", "PGR", "AR", "PBX1", "FOXA1", "FOXA2", "TXNIP", "PRDX5", "PDZK1IP1", "BIRC3", "DUSP10",  "C3", "C6", "C4B", "CFB", "C1QA")
+
+
+graphs_up_FigA <- lapply(X = FigA, FUN = Cil_v_Sec_Anat_Boxplot_Points)
+
+legend <- cowplot::get_legend(
+   Cil_v_Sec_Anat_Boxplot_Points("ESR1")+
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom") + 
+    theme(
+      legend.text = element_text(size = 25),
+      legend.title = element_text(size = 30),
+      legend.spacing = unit(5, "cm")
+      )+
+     guides(shape = guide_legend(override.aes = list(size = 10)))+
+     theme(legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(3, 'cm'))
+  )
+
+FigA_resize <- lapply(graphs_up_FigA, adj_text_size)
+FigA_remove_legend <- lapply(FigA_resize, remove_legend)
+FigA_sig <- lapply(FigA_remove_legend, add_sig, pnt = 6)
+
+
+grid_plot <- do.call(plot_grid, c(FigA_sig, labels = "auto", label_size = 26))
+
+
+plot_grid(grid_plot, legend, ncol = 1, rel_heights = c(1, 0.05))
+
+
+```
+
+
+
+# Figure 5: MHC-II and related transcripts
+
+```{r fig.height=20, fig.width=25}
+
+
+
+FigA <- c("HLA-DPA1", "HLA-DPB1", "HLA-DRA", "HLA-DRB", "HLA-DRB3", "HLA-DRB4", "HLA-DQA1", "HLA-DQB1", "HLA-DMA", "HLA-DMB", "HLA-DOA", "CD74")
+
+
+graphs_up_FigA <- lapply(X = FigA, FUN = Cil_v_Sec_Anat_Boxplot_Points, dataset = quantile_data_all)
+
+legend <- cowplot::get_legend(
+   Cil_v_Sec_Anat_Boxplot_Points("ESR1")+
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom") + 
+    theme(
+      legend.text = element_text(size = 25),
+      legend.title = element_text(size = 30),
+      legend.spacing = unit(5, "cm")
+      )+
+     guides(shape = guide_legend(override.aes = list(size = 10)))+
+     theme(legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(3, 'cm'))
+  )
+
+FigA_resize <- lapply(graphs_up_FigA, adj_text_size)
+FigA_remove_legend <- lapply(FigA_resize, remove_legend)
+FigA_sig <- lapply(FigA_remove_legend, add_sig, pnt = 6)
+
+
+grid_plot <- do.call(plot_grid, c(FigA_sig, labels = "auto", label_size = 26))
+
+
+plot_grid(grid_plot, legend, ncol = 1, rel_heights = c(1, 0.05))
+
+
+```
+
+
+# Supplementary Figures
+
+## Supplemntary Figure 1 Pairwise Comparisons of All Regions (Secretory Cells)
+
+
+```{r fig.height=12, fig.width=20}
+sec_Fim_v_Inf <- Volcano_Plot(Sec_Pairwise_Fim.vs.Inf, title = "Fimbria v Infundibulum", downreg = "Infundibulum", upreg = "Fimbria")
+
+sec_Fim_v_Amp <- Volcano_Plot(Sec_Pairwise_Fim.vs.Amp, title = "Fimbria v Ampulla ", downreg = "Fimbria", upreg = "Ampulla")
+
+
+sec_Fim_v_Isth <- Volcano_Plot(Sec_Pairwise_Fim.vs.Isth, title = "Fimbria v Isthmus", downreg = "Fimbria", upreg = "Isthmus")
+
+sec_Inf_v_Amp <- Volcano_Plot(Sec_Pairwise_Inf.vs.Amp, title = "Infundibulum v Ampulla", downreg = "Ampulla", upreg = "Infundibulum")
+
+sec_Inf_v_Isth <- Volcano_Plot(Sec_Pairwise_Inf.vs.Isth, title = "Infundibulum v Isthmus", downreg = "Isthmus", upreg = "Infundibulum", xmin = -6)
+
+
+sec_Amp_v_Isth <- Volcano_Plot(Sec_Pairwise_Amp.vs.Isth, title = "Ampulla v Isthmus", downreg = "Isthmus", upreg = "Ampulla", xmin = -6)
+
+
+sec_Fim_v_Inf + sec_Fim_v_Amp + sec_Fim_v_Isth + sec_Inf_v_Amp + sec_Inf_v_Isth + sec_Amp_v_Isth 
+
+
+```
+
+## Supplmentary Figure 2 Pairwise Comparisons of All Regions (Ciliated Cells)
+
+```{r fig.height=12, fig.width=20}
+
+cil_Fim_v_Inf <- Volcano_Plot(Cil_Pairwise_Fim.vs.Inf, title = "Fimbria v Infundibulum", downreg = "Infundibulum", upreg = "Fimbria")
+
+cil_Fim_v_Amp <- Volcano_Plot(Cil_Pairwise_Fim.vs.Amp, title = "Fimbria v Ampulla ", downreg = "Fimbria", upreg = "Ampulla")
+
+
+cil_Fim_v_Isth <- Volcano_Plot(Cil_Pairwise_Fim.vs.Isth, title = "Fimbria v Isthmus", downreg = "Fimbria", upreg = "Isthmus")
+
+cil_Inf_v_Amp <- Volcano_Plot(Cil_Pairwise_Inf.vs.Amp, title = "Infundibulum v Ampulla", downreg = "Ampulla", upreg = "Infundibulum")
+
+cil_Inf_v_Isth <- Volcano_Plot(Cil_Pairwise_Inf.vs.Isth, title = "Infundibulum v Isthmus", downreg = "Isthmus", upreg = "Infundibulum")
+
+
+cil_Amp_v_Isth <- Volcano_Plot(Cil_Pairwise_Amp.vs.Isth, title = "Ampulla v Isthmus", downreg = "Isthmus", upreg = "Ampulla")
+
+
+cil_Fim_v_Inf + cil_Fim_v_Amp + cil_Fim_v_Isth + cil_Inf_v_Amp + cil_Inf_v_Isth + cil_Amp_v_Isth 
+
+
+
+
+```
+
+
+
+## Supplementary Figure 4 Markers High in Peg Cells Increase Approaching the Ampulla
+
+
+
+```{r fig.height=20, fig.width=25}
+
+
+# PBX1 <- Cil_v_Sec_Anat_Boxplot_Points("PBX1") |> add_sig() |> remove_legend()
+# COL1A2  <- Cil_v_Sec_Anat_Boxplot_Points("COL1A2", dataset = quantile_data_all) |> add_sig() |> remove_legend()
+# PLCB1 <- Cil_v_Sec_Anat_Boxplot_Points("PLCB1") |> add_sig() |> remove_legend()
+# 
+# SYT17 <- Cil_v_Sec_Anat_Boxplot_Points("SYT17") |> add_sig() |> remove_legend()
+# KRT19 <- Cil_v_Sec_Anat_Boxplot_Points("KRT19") |> add_sig() |> remove_legend()
+# PPP2R2B <- Cil_v_Sec_Anat_Boxplot_Points("PPP2R2B") |> add_sig() |> remove_legend()
+# 
+# ITGA6 <- Cil_v_Sec_Anat_Boxplot_Points("ITGA6") |> add_sig() |> remove_legend()
+# 
+# CD44 <- Cil_v_Sec_Anat_Boxplot_Points("CD44") |> add_sig() |> remove_legend()
+# 
+# 
+# PBX1 + COL1A2 + PLCB1 + SYT17 + ITGA6 + CD44 + KRT19 + PPP2R2B + plot_annotation(tag_levels = 'A')
+
+
+
+FigS3 <- c("PBX1", "COL1A2", "PLCB1", "SYT17", "ITGA6", "CD44", "KRT19", "PPP2R2B")
+
+
+graphs_up_FigS3 <- lapply(X = FigS3, FUN = Cil_v_Sec_Anat_Boxplot_Points, dataset = quantile_data_all)
+
+legend <- cowplot::get_legend(
+   Cil_v_Sec_Anat_Boxplot_Points("PBX1")+
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom") + 
+    theme(
+      legend.text = element_text(size = 25),
+      legend.title = element_text(size = 30),
+      legend.spacing = unit(5, "cm")
+      )+
+     guides(shape = guide_legend(override.aes = list(size = 10)))+
+     theme(legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(3, 'cm'))
+  )
+
+FigS3_resize <- lapply(graphs_up_FigS3, adj_text_size)
+FigS3_remove_legend <- lapply(FigS3_resize, remove_legend)
+FigS3_sig <- lapply(FigS3_remove_legend, add_sig, pnt = 6)
+
+
+grid_plot <- do.call(plot_grid, c(FigS3_sig, labels = "auto", label_size = 26))
+
+
+plot_grid(grid_plot, legend, ncol = 1, rel_heights = c(1, 0.05))
+
+```
+
+## Supplementary figure 4 NOTCH2, NOTCH3, and EGFR expression 
+
+
+```{r fig.height=10, fig.width=18}
+
+
+NOTCH1 <- Cil_v_Sec_Anat_Boxplot_Points("NOTCH1") |> add_sig()
+NOTCH2 <- Cil_v_Sec_Anat_Boxplot_Points("NOTCH2") |> add_sig()
+NOTCH3 <- Cil_v_Sec_Anat_Boxplot_Points("NOTCH3") |> add_sig()
+EGFR <- Cil_v_Sec_Anat_Boxplot_Points("EGFR") |> add_sig()
+
+
+NOTCH1 + NOTCH2 + NOTCH3 + EGFR
+```
+
+
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
