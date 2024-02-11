@@ -1239,5 +1239,9 @@ pheatmap(assayDataElement(quantile_AnatCompData[GOI, ], elt = "log_q"),
 
 
 ```
+# Session Info
 
+```{r}
+sessionInfo()
+```
 
